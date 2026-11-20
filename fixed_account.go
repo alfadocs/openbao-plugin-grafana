@@ -9,7 +9,7 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/Boostport/vault-plugin-secrets-grafana/client"
+	"github.com/alfadocs/openbao-plugin-grafana/client"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 )
