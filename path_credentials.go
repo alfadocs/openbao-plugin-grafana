@@ -61,9 +61,18 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 		return logical.ErrorResponse("role configuration not compatible with mount configuration: %w", err.Error()), nil
 	}
 
-	token, err := b.createToken(ctx, req.Storage, config.Type, role)
-	if err != nil {
-		return nil, err
+	var token *grafanaToken
+	if role.ServiceAccountTemplate != "" && config.Type == GrafanaType {
+		var errResp *logical.Response
+		token, errResp, err = b.createFixedAccountToken(ctx, req, roleName, role)
+		if errResp != nil || err != nil {
+			return errResp, err
+		}
+	} else {
+		token, err = b.createToken(ctx, req.Storage, config.Type, role)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// The response is divided into two objects (1) internal data and (2) data.
@@ -77,6 +86,7 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 		"region":             token.Region,
 		"access_policy_id":   token.AccessPolicyID,
 		"service_account_id": token.ServiceAccountID,
+		"token_id":           token.TokenID,
 		"vault_role":         roleName,
 	})
 

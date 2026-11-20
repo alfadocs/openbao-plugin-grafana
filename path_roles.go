@@ -24,16 +24,19 @@ type realm struct {
 }
 
 type grafanaRoleEntry struct {
-	Type           string        `json:"type"`            // Set when configuration type is "cloud". Should be "cloud_access_policy" or "grafana_service_account"
-	Stack          string        `json:"stack"`           // For Grafana service accounts where configuration type is "cloud"
-	Region         string        `json:"region"`          // For Grafana Cloud access policies
-	Scopes         []string      `json:"scopes"`          // For Grafana Cloud access policies
-	Realms         string        `json:"realms"`          // For Grafana Cloud access policies
-	AllowedSubnets []string      `json:"allowed_subnets"` // For Grafana Cloud access policies
-	Role           string        `json:"role"`            // For Grafana service accounts
-	RBACRoles      []string      `json:"rbac_roles"`      // For Grafana service accounts
-	TTL            time.Duration `json:"ttl"`
-	MaxTTL         time.Duration `json:"max_ttl"`
+	Type           string   `json:"type"`            // Set when configuration type is "cloud". Should be "cloud_access_policy" or "grafana_service_account"
+	Stack          string   `json:"stack"`           // For Grafana service accounts where configuration type is "cloud"
+	Region         string   `json:"region"`          // For Grafana Cloud access policies
+	Scopes         []string `json:"scopes"`          // For Grafana Cloud access policies
+	Realms         string   `json:"realms"`          // For Grafana Cloud access policies
+	AllowedSubnets []string `json:"allowed_subnets"` // For Grafana Cloud access policies
+	Role           string   `json:"role"`            // For Grafana service accounts
+	RBACRoles      []string `json:"rbac_roles"`      // For Grafana service accounts
+	// ServiceAccountTemplate names one fixed service account per caller, for example
+	// "agent-{{identity.entity.aliases.<accessor>.name}}". Empty means a new account for each lease.
+	ServiceAccountTemplate string        `json:"service_account_template"`
+	TTL                    time.Duration `json:"ttl"`
+	MaxTTL                 time.Duration `json:"max_ttl"`
 }
 
 func (r *grafanaRoleEntry) validate(configType string) error {
@@ -73,15 +76,16 @@ func (r *grafanaRoleEntry) validate(configType string) error {
 
 func (r *grafanaRoleEntry) toResponseData() map[string]any {
 	respData := map[string]any{
-		"type":       r.Type,
-		"stack":      r.Stack,
-		"region":     r.Region,
-		"scopes":     r.Scopes,
-		"realms":     r.Realms,
-		"role":       r.Role,
-		"rbac_roles": r.RBACRoles,
-		"ttl":        r.TTL.Seconds(),
-		"max_ttl":    r.MaxTTL.Seconds(),
+		"type":                     r.Type,
+		"stack":                    r.Stack,
+		"region":                   r.Region,
+		"scopes":                   r.Scopes,
+		"realms":                   r.Realms,
+		"role":                     r.Role,
+		"rbac_roles":               r.RBACRoles,
+		"service_account_template": r.ServiceAccountTemplate,
+		"ttl":                      r.TTL.Seconds(),
+		"max_ttl":                  r.MaxTTL.Seconds(),
 	}
 	return respData
 
@@ -135,6 +139,11 @@ func pathRole(b *grafanaBackend) []*framework.Path {
 				"rbac_roles": {
 					Type:        framework.TypeCommaStringSlice,
 					Description: "The RBAC roles to grant to the Grafana service account",
+					Required:    false,
+				},
+				"service_account_template": {
+					Type:        framework.TypeString,
+					Description: "Identity template for the name of one fixed service account per caller. Each read makes a token for that account; a revoke deletes only the token.",
 					Required:    false,
 				},
 				"ttl": {
@@ -266,6 +275,18 @@ func (b *grafanaBackend) pathRolesWrite(ctx context.Context, req *logical.Reques
 
 	if roleType, ok := d.GetOk("rbac_roles"); ok {
 		roleEntry.RBACRoles = roleType.([]string)
+	}
+
+	if tpl, ok := d.GetOk("service_account_template"); ok {
+		if hasTemplate, err := framework.ValidateIdentityTemplate(tpl.(string)); tpl.(string) != "" && (err != nil || !hasTemplate) {
+			// Without a template, every caller would share one account.
+			return logical.ErrorResponse("service_account_template must be a valid identity template: %v", err), nil
+		}
+		roleEntry.ServiceAccountTemplate = tpl.(string)
+	}
+
+	if roleEntry.ServiceAccountTemplate != "" && config.Type != GrafanaType {
+		return logical.ErrorResponse("service_account_template needs config type %q", GrafanaType), nil
 	}
 
 	if err := roleEntry.validate(config.Type); err != nil {

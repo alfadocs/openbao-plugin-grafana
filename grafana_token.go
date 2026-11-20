@@ -21,6 +21,7 @@ type grafanaToken struct {
 	Region           string `json:"region"`             // For Grafana Cloud access policies
 	AccessPolicyID   string `json:"access_policy_id"`   // For Grafana Cloud access policies
 	ServiceAccountID int64  `json:"service_account_id"` // For Grafana Cloud and Grafana service accounts
+	TokenID          int64  `json:"token_id"`           // Set for a fixed service account: a revoke deletes only this token
 }
 
 func (b *grafanaBackend) grafanaToken() *framework.Secret {
@@ -84,6 +85,17 @@ func (b *grafanaBackend) tokenRevoke(ctx context.Context, req *logical.Request, 
 		serviceAccountID, err := serviceAccountIDFromInternalData(req.Secret.InternalData["service_account_id"])
 		if err != nil {
 			return nil, err
+		}
+		// A lease of a fixed service account has a token_id: delete only the token,
+		// so that the account and its history stay.
+		if raw, ok := req.Secret.InternalData["token_id"]; ok && raw != nil {
+			tokenID, err := serviceAccountIDFromInternalData(raw)
+			if err != nil {
+				return nil, err
+			}
+			if tokenID != 0 {
+				return nil, client.DeleteServiceAccountToken(serviceAccountID, tokenID)
+			}
 		}
 		err = client.DeleteServiceAccount(serviceAccountID)
 

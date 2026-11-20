@@ -1,3 +1,30 @@
+# openbao-plugin-grafana
+
+A fork of [Boostport/vault-plugin-secrets-grafana](https://github.com/Boostport/vault-plugin-secrets-grafana)
+for OpenBao, with two changes:
+
+- **One fixed service account for each caller.** A role with `service_account_template`
+  resolves the template against the identity of the caller, for example
+  `agent-{{identity.entity.aliases.<accessor>.name}}`, and makes a token for that account.
+  A revoke deletes only the token, so the account and the dashboard history stay. The plugin:
+  - uses only an account that it made itself (it records each one under `accounts/`);
+  - sets the basic role of the OpenBao role on each read;
+  - refuses an account that a Grafana admin disabled;
+  - refuses a second OpenBao role with the same account name;
+  - makes the account again if somebody deleted it in Grafana.
+- **The config read does not return the admin token.**
+
+```sh
+bao write grafana/roles/editor role=Editor ttl=8h max_ttl=8h \
+  service_account_template='agent-{{identity.entity.aliases.auth_oidc_1234.name}}'
+```
+
+Grafana 12.2 shows a change made by a service account as "Anonymous". Grafana 13
+shows the account name. `fixed_account_test.go` runs against a real Grafana; see the
+comment at its top.
+
+---
+
 # Vault Plugin: Grafana Secrets Backend
 [![Tests](https://github.com/Boostport/vault-plugin-secrets-grafana/actions/workflows/tests.yml/badge.svg)](https://github.com/Boostport/vault-plugin-secrets-grafana/actions/workflows/tests.yml)
 

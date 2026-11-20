@@ -1,0 +1,153 @@
+package vault_plugin_secrets_grafana
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"sync"
+	"time"
+	"uuid"
+
+	"github.com/Boostport/vault-plugin-secrets-grafana/client"
+	"github.com/hashicorp/vault/sdk/framework"
+	"github.com/hashicorp/vault/sdk/logical"
+)
+
+// A fixed service account belongs to one caller and one role. The plugin
+// records each account it makes under accounts/<name>. It never uses an
+// account that it did not make, so a hand-made account with the same name
+// (perhaps with role Admin) cannot be taken over.
+
+const accountsPrefix = "accounts/"
+
+// Grafana accepts more, but a name from an identity template must not hold a
+// slash (a storage path) or other surprises.
+var accountName = regexp.MustCompile(`^[A-Za-z0-9@._+-]{1,190}$`)
+
+type fixedAccount struct {
+	ID    int64  `json:"id"`
+	Vault string `json:"vault_role"`
+}
+
+var accountLock sync.Mutex // ponytail: one lock for all accounts; reads are rare and fast
+
+func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logical.Request, roleName string, role *grafanaRoleEntry) (*grafanaToken, *logical.Response, error) {
+	if req.EntityID == "" {
+		return nil, logical.ErrorResponse("service_account_template is set but the caller's token has no entity"), nil
+	}
+	name, err := framework.PopulateIdentityTemplate(role.ServiceAccountTemplate, req.EntityID, b.System())
+	if err != nil {
+		return nil, logical.ErrorResponse("service_account_template %q did not resolve for this caller: %s", role.ServiceAccountTemplate, err), nil
+	}
+	if !accountName.MatchString(name) {
+		return nil, logical.ErrorResponse("service_account_template resolved to %q, which is not a valid account name", name), nil
+	}
+
+	c, err := b.getClient(ctx, req.Storage)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	accountLock.Lock()
+	defer accountLock.Unlock()
+
+	sa, errResp, err := ensureFixedAccount(ctx, req.Storage, c, name, roleName, role)
+	if errResp != nil || err != nil {
+		return nil, errResp, err
+	}
+
+	if len(role.RBACRoles) > 0 {
+		roleUIDs, err := customRBACRoleNamesToIDs(c, role.RBACRoles)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error converting role names to IDs: %w", err)
+		}
+		if err := c.SetServiceAccountRoleAssignments(client.ServiceAccountRoleAssignmentsInput{ServiceAccountID: sa.ID, RoleUIDs: roleUIDs}); err != nil {
+			return nil, nil, fmt.Errorf("error setting service account role assignments: %w", err)
+		}
+	}
+
+	tokenTTL := role.MaxTTL
+	if tokenTTL == 0 {
+		tokenTTL = role.TTL
+	}
+	if tokenTTL == 0 {
+		tokenTTL = 24 * time.Hour
+	}
+	token, err := c.CreateServiceAccountToken(client.CreateServiceAccountTokenInput{
+		Name:             fmt.Sprintf("vault-%s", uuid.New()),
+		ServiceAccountID: sa.ID,
+		SecondsToLive:    int64(tokenTTL.Seconds()),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("error creating service account token: %w", err)
+	}
+
+	return &grafanaToken{Token: token.Key, ServiceAccountID: sa.ID, TokenID: token.ID}, nil, nil
+}
+
+// ensureFixedAccount returns the account for name. It makes the account when the
+// plugin has no record of it, and sets the basic role of the Vault role each time.
+func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafana, name, roleName string, role *grafanaRoleEntry) (*client.ServiceAccount, *logical.Response, error) {
+	want := "None"
+	if role.Role != "" {
+		want = role.Role
+	}
+
+	var rec fixedAccount
+	entry, err := s.Get(ctx, accountsPrefix+name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if entry != nil {
+		if err := entry.DecodeJSON(&rec); err != nil {
+			return nil, nil, err
+		}
+		if rec.Vault != roleName {
+			return nil, logical.ErrorResponse("service account %q belongs to role %q; give each role its own service_account_template", name, rec.Vault), nil
+		}
+		sa, err := c.GetServiceAccount(rec.ID)
+		switch {
+		case client.IsNotFound(err):
+			// Somebody deleted the account in Grafana: forget it and make a new one below.
+			if err := s.Delete(ctx, accountsPrefix+name); err != nil {
+				return nil, nil, err
+			}
+		case err != nil:
+			return nil, nil, fmt.Errorf("error reading service account: %w", err)
+		case sa.Name != name:
+			return nil, logical.ErrorResponse("service account %d is now named %q, not %q; delete accounts/%s or rename it back", rec.ID, sa.Name, name, name), nil
+		case sa.IsDisabled:
+			// A Grafana admin disabled it to stop this caller. Do not undo that.
+			return nil, logical.ErrorResponse("service account %q is disabled in Grafana", name), nil
+		default:
+			if sa.Role != want {
+				if err := c.SetServiceAccountRole(sa.ID, want); err != nil {
+					return nil, nil, err
+				}
+				sa.Role = want
+			}
+			return &sa, nil, nil
+		}
+	}
+
+	existing, err := c.FindServiceAccount(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if existing != nil {
+		return nil, logical.ErrorResponse("a service account named %q exists, but this plugin did not make it; rename or delete it in Grafana", name), nil
+	}
+	sa, err := c.CreateServiceAccount(client.CreateServiceAccountInput{Name: name, Role: want})
+	if err != nil {
+		return nil, nil, err
+	}
+	stored, err := logical.StorageEntryJSON(accountsPrefix+name, fixedAccount{ID: sa.ID, Vault: roleName})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.Put(ctx, stored); err != nil {
+		_ = c.DeleteServiceAccount(sa.ID) // ponytail: best effort; the next read reports the name clash
+		return nil, nil, err
+	}
+	return &sa, nil, nil
+}

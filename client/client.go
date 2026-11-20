@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -68,7 +69,7 @@ func (g *Grafana) do(method, requestPath string, query url.Values, body []byte, 
 	}
 
 	if resp.StatusCode > 299 {
-		return fmt.Errorf("error response from server (%d): %s", resp.StatusCode, bodyContents)
+		return &StatusError{Code: resp.StatusCode, Body: string(bodyContents)}
 	}
 
 	if responseStruct == nil {
@@ -81,4 +82,20 @@ func (g *Grafana) do(method, requestPath string, query url.Values, body []byte, 
 	}
 
 	return nil
+}
+
+// StatusError is a response from Grafana with a status code above 299.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("error response from server (%d): %s", e.Code, e.Body)
+}
+
+// IsNotFound reports whether err is a 404 response from Grafana.
+func IsNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
 }

@@ -3,6 +3,7 @@ package vault_plugin_secrets_grafana
 import (
 	"context"
 	"fmt"
+	"maps"
 	"testing"
 
 	"github.com/hashicorp/vault/sdk/logical"
@@ -239,6 +240,13 @@ func testConfigRead(b logical.Backend, s logical.Storage, expected map[string]an
 	if resp.IsError() {
 		return resp.Error()
 	}
+
+	// The admin token is write-only: the read must never return it.
+	if _, ok := resp.Data["token"]; ok {
+		return fmt.Errorf("config read returned the token")
+	}
+	expected = maps.Clone(expected)
+	delete(expected, "token")
 
 	if len(expected) != len(resp.Data) {
 		return fmt.Errorf("read data mismatch (expected %d values, got %d)", len(expected), len(resp.Data))

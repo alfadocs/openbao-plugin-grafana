@@ -120,9 +120,9 @@ func (b *grafanaBackend) pathConfigRead(ctx context.Context, req *logical.Reques
 
 	return &logical.Response{
 		Data: map[string]any{
-			"type":  config.Type,
-			"token": config.Token,
-			"url":   config.URL,
+			// The admin token is write-only: a read must not reveal it.
+			"type": config.Type,
+			"url":  config.URL,
 		},
 	}, nil
 }
