@@ -156,6 +156,32 @@ func TestFixedAccount(t *testing.T) {
 	}
 	account(saID(first))
 
+	// A lease with a token ID but no fixed_account mark (as written by an earlier build)
+	// still deletes only its token.
+	legacy := *second.Secret
+	legacy.InternalData = map[string]any{}
+	for k, v := range second.Secret.InternalData {
+		legacy.InternalData[k] = v
+	}
+	delete(legacy.InternalData, "fixed_account")
+	call(logical.RevokeOperation, "creds/editor", nil, &legacy)
+	if works(t2) {
+		t.Fatal("the legacy lease kept its token")
+	}
+	account(saID(first))
+
+	// The lease ends with the Grafana token (max_ttl 7200).
+	if second.Secret.TTL != 2*time.Hour || second.Secret.MaxTTL != 2*time.Hour {
+		t.Fatalf("lease TTL %v / %v, want 2h", second.Secret.TTL, second.Secret.MaxTTL)
+	}
+
+	// Upper case in the email gives the same account (Grafana lowercases logins).
+	asEntity("entity-"+alice, strings.ToUpper(alice))
+	if saID(mustCreds("editor")) != saID(first) {
+		t.Fatal("upper case email got another account")
+	}
+	as(alice)
+
 	// Another entity with the same email (for example a reused address) gets nothing.
 	asEntity("entity-new-hire", alice)
 	if _, msg := creds("editor"); !strings.Contains(msg, "another entity") {

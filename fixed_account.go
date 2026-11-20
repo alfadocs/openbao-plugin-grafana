@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 	"uuid"
@@ -30,7 +31,8 @@ type fixedAccount struct {
 	Entity string `json:"entity_id"` // the OpenBao entity that owns the account
 }
 
-var accountLock sync.Mutex // ponytail: one lock for all accounts; reads are rare and fast
+// accountLock serialises creds reads with role writes and deletes.
+var accountLock sync.Mutex // ponytail: one lock for the whole mount; reads are rare and fast
 
 func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logical.Request, roleName string, role *grafanaRoleEntry) (*grafanaToken, *logical.Response, error) {
 	if req.EntityID == "" {
@@ -40,6 +42,7 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 	if err != nil {
 		return nil, logical.ErrorResponse("service_account_template %q did not resolve for this caller: %s", role.ServiceAccountTemplate, err), nil
 	}
+	name = strings.ToLower(name)
 	if !accountName.MatchString(name) {
 		return nil, logical.ErrorResponse("service_account_template resolved to %q, which is not a valid account name", name), nil
 	}
@@ -49,16 +52,9 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 		return nil, nil, err
 	}
 
-	accountLock.Lock()
-	defer accountLock.Unlock()
-
-	// Read the role again under the lock, so a read that waited cannot undo a role change.
-	role, err = b.getRole(ctx, req.Storage, roleName)
-	if err != nil {
-		return nil, nil, err
-	}
-	if role == nil || role.ServiceAccountTemplate == "" {
-		return nil, logical.ErrorResponse("role %q changed during the request; try again", roleName), nil
+	// The caller (createUserCreds) holds accountLock.
+	if len(role.RBACRoles) > 0 {
+		return nil, logical.ErrorResponse("role %q has rbac_roles, which a fixed account cannot use", roleName), nil
 	}
 
 	sa, errResp, err := ensureFixedAccount(ctx, req.Storage, c, name, roleName, req.EntityID, role)
@@ -86,7 +82,7 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 		return nil, nil, fmt.Errorf("grafana returned token ID %d for service account %d; the token stays until it expires", token.ID, sa.ID)
 	}
 
-	return &grafanaToken{Token: token.Key, ServiceAccountID: sa.ID, TokenID: token.ID}, nil, nil
+	return &grafanaToken{Token: token.Key, ServiceAccountID: sa.ID, TokenID: token.ID, TTL: tokenTTL}, nil, nil
 }
 
 // ensureFixedAccount returns the account for name. It makes the account when the

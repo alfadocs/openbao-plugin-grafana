@@ -152,7 +152,7 @@ func (b *grafanaBackend) pathConfigWrite(ctx context.Context, req *logical.Reque
 
 	if configURL, ok := data.GetOk("url"); ok {
 		_, newToken := data.GetOk("token")
-		if !createOperation && configURL.(string) != config.URL && !newToken {
+		if config.URL != "" && configURL.(string) != config.URL && !newToken {
 			// Otherwise a config writer could send the stored admin token to another server.
 			return logical.ErrorResponse("a new url needs a new token"), nil
 		}

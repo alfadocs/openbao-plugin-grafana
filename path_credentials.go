@@ -43,6 +43,10 @@ func (b *grafanaBackend) pathCredentialsRead(ctx context.Context, req *logical.R
 }
 
 func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Request, roleName string) (*logical.Response, error) {
+	// The role, the account and the lease TTL must all come from one version of the role.
+	accountLock.Lock()
+	defer accountLock.Unlock()
+
 	role, err := b.getRole(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving role: %w", err)
@@ -100,7 +104,9 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 	}
 
 	if token.TokenID != 0 {
-		// The Grafana token has a fixed lifetime; a renewed lease would outlive it.
+		// The Grafana token has a fixed lifetime: the lease ends with it and cannot be renewed.
+		resp.Secret.TTL = token.TTL
+		resp.Secret.MaxTTL = token.TTL
 		resp.Secret.Renewable = false
 	}
 

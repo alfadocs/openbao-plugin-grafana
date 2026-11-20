@@ -220,6 +220,9 @@ func (b *grafanaBackend) pathRolesRead(ctx context.Context, req *logical.Request
 }
 
 func (b *grafanaBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	accountLock.Lock() // a role change waits for reads in progress
+	defer accountLock.Unlock()
+
 	name, ok := d.GetOk("name")
 	if !ok {
 		return logical.ErrorResponse("missing role name"), nil
@@ -323,6 +326,9 @@ func (b *grafanaBackend) pathRolesWrite(ctx context.Context, req *logical.Reques
 }
 
 func (b *grafanaBackend) pathRolesDelete(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	accountLock.Lock()
+	defer accountLock.Unlock()
+
 	roleName := d.Get("name").(string)
 	if roleName == "" {
 		return logical.ErrorResponse("missing role"), nil
