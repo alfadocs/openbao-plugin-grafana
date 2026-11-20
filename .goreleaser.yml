@@ -1,4 +1,5 @@
 version: 2
+project_name: openbao-plugin-grafana
 builds:
   - main: ./cmd/vault-plugin-secrets-grafana
     env:
@@ -17,9 +18,11 @@ gomod:
 archives:
   - formats:
     - binary
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   algorithm: sha256
+  name_template: checksums.txt
 
 signs:
   - cmd: cosign

@@ -120,9 +120,9 @@ func (b *grafanaBackend) pathConfigRead(ctx context.Context, req *logical.Reques
 
 	return &logical.Response{
 		Data: map[string]any{
-			"type":  config.Type,
-			"token": config.Token,
-			"url":   config.URL,
+			// The admin token is write-only: a read must not reveal it.
+			"type": config.Type,
+			"url":  config.URL,
 		},
 	}, nil
 }
@@ -151,6 +151,11 @@ func (b *grafanaBackend) pathConfigWrite(ctx context.Context, req *logical.Reque
 	}
 
 	if configURL, ok := data.GetOk("url"); ok {
+		_, newToken := data.GetOk("token")
+		if config.URL != "" && configURL.(string) != config.URL && !newToken {
+			// Otherwise a config writer could send the stored admin token to another server.
+			return logical.ErrorResponse("a new url needs a new token"), nil
+		}
 		config.URL = configURL.(string)
 	}
 

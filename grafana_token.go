@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -15,12 +16,14 @@ const (
 )
 
 type grafanaToken struct {
-	IsCloud          bool   `json:"is_cloud"`
-	Token            string `json:"token"`
-	Stack            string `json:"stack"`              // For Grafana Cloud service accounts
-	Region           string `json:"region"`             // For Grafana Cloud access policies
-	AccessPolicyID   string `json:"access_policy_id"`   // For Grafana Cloud access policies
-	ServiceAccountID int64  `json:"service_account_id"` // For Grafana Cloud and Grafana service accounts
+	IsCloud          bool          `json:"is_cloud"`
+	Token            string        `json:"token"`
+	Stack            string        `json:"stack"`              // For Grafana Cloud service accounts
+	Region           string        `json:"region"`             // For Grafana Cloud access policies
+	AccessPolicyID   string        `json:"access_policy_id"`   // For Grafana Cloud access policies
+	ServiceAccountID int64         `json:"service_account_id"` // For Grafana Cloud and Grafana service accounts
+	TokenID          int64         `json:"token_id"`           // Set for a fixed service account: a revoke deletes only this token
+	TTL              time.Duration `json:"-"`                  // Lifetime of a fixed account token
 }
 
 func (b *grafanaBackend) grafanaToken() *framework.Secret {
@@ -38,6 +41,17 @@ func (b *grafanaBackend) grafanaToken() *framework.Secret {
 }
 
 func (b *grafanaBackend) tokenRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	if leaseURL, _ := req.Secret.InternalData["grafana_url"].(string); leaseURL != "" {
+		config, err := getConfig(ctx, req.Storage)
+		if err != nil {
+			return nil, err
+		}
+		if config == nil || config.URL != leaseURL {
+			// Fail, so that OpenBao keeps the lease, instead of deleting on another Grafana.
+			return nil, fmt.Errorf("lease was issued by %s, but the mount now points elsewhere; restore the config to revoke it", leaseURL)
+		}
+	}
+
 	client, err := b.getClient(ctx, req.Storage)
 	if err != nil {
 		return nil, fmt.Errorf("error getting client: %w", err)
@@ -84,6 +98,22 @@ func (b *grafanaBackend) tokenRevoke(ctx context.Context, req *logical.Request, 
 		serviceAccountID, err := serviceAccountIDFromInternalData(req.Secret.InternalData["service_account_id"])
 		if err != nil {
 			return nil, err
+		}
+		// A lease of a fixed service account has a token_id: delete only the token,
+		// so that the account and its history stay.
+		// A positive token_id, or the fixed_account mark, means a shared account:
+		// delete only the token. Only a lease with neither owns its account.
+		fixed, _ := req.Secret.InternalData["fixed_account"].(bool)
+		rawTokenID, hasTokenID := req.Secret.InternalData["token_id"]
+		if fixed || (hasTokenID && rawTokenID != nil) {
+			tokenID, err := serviceAccountIDFromInternalData(rawTokenID)
+			switch {
+			case err == nil && tokenID > 0:
+				return nil, client.DeleteServiceAccountToken(serviceAccountID, tokenID)
+			case fixed:
+				// Never fall through to deleting the shared account.
+				return nil, fmt.Errorf("fixed account lease has no valid token_id (%v): %v", rawTokenID, err)
+			}
 		}
 		err = client.DeleteServiceAccount(serviceAccountID)
 

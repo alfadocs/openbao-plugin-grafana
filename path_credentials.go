@@ -43,6 +43,10 @@ func (b *grafanaBackend) pathCredentialsRead(ctx context.Context, req *logical.R
 }
 
 func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Request, roleName string) (*logical.Response, error) {
+	// The role, the account and the lease TTL must all come from one version of the role.
+	accountLock.Lock()
+	defer accountLock.Unlock()
+
 	role, err := b.getRole(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving role: %w", err)
@@ -61,9 +65,18 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 		return logical.ErrorResponse("role configuration not compatible with mount configuration: %w", err.Error()), nil
 	}
 
-	token, err := b.createToken(ctx, req.Storage, config.Type, role)
-	if err != nil {
-		return nil, err
+	var token *grafanaToken
+	if role.ServiceAccountTemplate != "" && config.Type == GrafanaType {
+		var errResp *logical.Response
+		token, errResp, err = b.createFixedAccountToken(ctx, req, roleName, role)
+		if errResp != nil || err != nil {
+			return errResp, err
+		}
+	} else {
+		token, err = b.createToken(ctx, req.Storage, config.Type, role)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// The response is divided into two objects (1) internal data and (2) data.
@@ -77,7 +90,10 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 		"region":             token.Region,
 		"access_policy_id":   token.AccessPolicyID,
 		"service_account_id": token.ServiceAccountID,
+		"token_id":           token.TokenID,
+		"fixed_account":      token.TokenID != 0,
 		"vault_role":         roleName,
+		"grafana_url":        config.URL, // revoke refuses another target
 	})
 
 	if role.TTL > 0 {
@@ -86,6 +102,13 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 
 	if role.MaxTTL > 0 {
 		resp.Secret.MaxTTL = role.MaxTTL
+	}
+
+	if token.TokenID != 0 {
+		// The Grafana token has a fixed lifetime: the lease ends with it and cannot be renewed.
+		resp.Secret.TTL = token.TTL
+		resp.Secret.MaxTTL = token.TTL
+		resp.Secret.Renewable = false
 	}
 
 	return resp, nil

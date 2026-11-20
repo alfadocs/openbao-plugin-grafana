@@ -1,6 +1,6 @@
 services:
   test:
-    image: golang:${GO_VERSION}
+    image: golang:${GO_VERSION:-1.27}
     working_dir: /source
     command: go test -v ./...
     environment:

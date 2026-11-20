@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -81,4 +83,52 @@ func (g *Grafana) CreateServiceAccountToken(input CreateServiceAccountTokenInput
 	}
 
 	return result, nil
+}
+
+// GetServiceAccount returns the service account with the ID. The error is a
+// StatusError with code 404 when it does not exist.
+func (g *Grafana) GetServiceAccount(serviceAccountID int64) (ServiceAccount, error) {
+	result := ServiceAccount{}
+	err := g.do(http.MethodGet, fmt.Sprintf("/api/serviceaccounts/%d", serviceAccountID), nil, nil, &result)
+	return result, err
+}
+
+// FindServiceAccount returns the service account with exactly this name, or nil.
+func (g *Grafana) FindServiceAccount(name string) (*ServiceAccount, error) {
+	var result struct {
+		ServiceAccounts []ServiceAccount `json:"serviceAccounts"`
+	}
+	// The search matches parts of names, so filter for the exact name.
+	query := url.Values{"query": {name}, "perpage": {"1000"}}
+	if err := g.do(http.MethodGet, "/api/serviceaccounts/search", query, nil, &result); err != nil {
+		return nil, fmt.Errorf("error searching service accounts: %w", err)
+	}
+	for _, sa := range result.ServiceAccounts {
+		// Grafana lowercases the login, so names that differ only in case clash.
+		if strings.EqualFold(sa.Name, name) {
+			return &sa, nil
+		}
+	}
+	return nil, nil
+}
+
+// SetServiceAccountRole sets the basic role (Viewer, Editor, Admin or None).
+func (g *Grafana) SetServiceAccountRole(serviceAccountID int64, role string) error {
+	data, err := json.Marshal(map[string]string{"role": role})
+	if err != nil {
+		return err
+	}
+	if err := g.do(http.MethodPatch, fmt.Sprintf("/api/serviceaccounts/%d", serviceAccountID), nil, data, nil); err != nil {
+		return fmt.Errorf("error setting service account role: %w", err)
+	}
+	return nil
+}
+
+// DeleteServiceAccountToken deletes one token. A token that is already gone is not an error.
+func (g *Grafana) DeleteServiceAccountToken(serviceAccountID, tokenID int64) error {
+	err := g.do(http.MethodDelete, fmt.Sprintf("/api/serviceaccounts/%d/tokens/%d", serviceAccountID, tokenID), nil, nil, nil)
+	if err != nil && !IsNotFound(err) {
+		return fmt.Errorf("error deleting service account token: %w", err)
+	}
+	return nil
 }
