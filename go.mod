@@ -1,4 +1,4 @@
-module github.com/Boostport/vault-plugin-secrets-grafana
+module github.com/alfadocs/openbao-plugin-grafana
 
 go 1.27
 

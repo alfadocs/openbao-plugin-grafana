@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Boostport/vault-plugin-secrets-grafana/client"
+	"github.com/alfadocs/openbao-plugin-grafana/client"
 	"github.com/hashicorp/go-hclog"
 	log "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/sdk/helper/logging"

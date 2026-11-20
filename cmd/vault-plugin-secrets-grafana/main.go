@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	vault_plugin_secrets_grafana "github.com/Boostport/vault-plugin-secrets-grafana"
+	vault_plugin_secrets_grafana "github.com/alfadocs/openbao-plugin-grafana"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/plugin"
