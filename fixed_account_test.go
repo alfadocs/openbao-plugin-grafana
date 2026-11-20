@@ -35,19 +35,21 @@ func TestFixedAccount(t *testing.T) {
 
 	call := func(op logical.Operation, path string, data map[string]any, secret *logical.Secret) *logical.Response {
 		t.Helper()
-		resp, err := b.HandleRequest(ctx, &logical.Request{Operation: op, Path: path, Data: data, Storage: s, EntityID: "e", Secret: secret})
+		resp, err := b.HandleRequest(ctx, &logical.Request{Operation: op, Path: path, Data: data, Storage: s, EntityID: sys.EntityVal.ID, Secret: secret})
 		if err != nil {
 			t.Fatalf("%s %s: %v", op, path, err)
 		}
 		return resp
 	}
-	as := func(email string) {
-		if email == "" {
-			sys.EntityVal = &logical.Entity{ID: "e"}
-			return
+	// asEntity signs in as entity id with the Google alias email.
+	asEntity := func(id, email string) {
+		sys.EntityVal = &logical.Entity{ID: id}
+		if email != "" {
+			sys.EntityVal.Aliases = []*logical.Alias{{MountAccessor: "auth_oidc_x", Name: email}}
 		}
-		sys.EntityVal = &logical.Entity{ID: "e", Aliases: []*logical.Alias{{MountAccessor: "auth_oidc_x", Name: email}}}
 	}
+	as := func(email string) { asEntity("entity-"+email, email) }
+	as("admin")
 	creds := func(role string) (*logical.Response, string) {
 		t.Helper()
 		resp := call(logical.ReadOperation, "creds/"+role, nil, nil)
@@ -99,6 +101,12 @@ func TestFixedAccount(t *testing.T) {
 	if _, ok := call(logical.ReadOperation, "config", nil, nil).Data["token"]; ok {
 		t.Fatal("config read returned the admin token")
 	}
+	if resp := call(logical.UpdateOperation, "config", map[string]any{"url": "https://attacker.example"}, nil); !resp.IsError() {
+		t.Fatal("a new url without a new token was accepted")
+	}
+	if resp := call(logical.CreateOperation, "roles/rbac", map[string]any{"rbac_roles": "x", "service_account_template": "a-{{identity.entity.id}}"}, nil); !resp.IsError() {
+		t.Fatal("rbac_roles with service_account_template was accepted")
+	}
 	tpl := "agent-{{identity.entity.aliases.auth_oidc_x.name}}"
 	call(logical.CreateOperation, "roles/editor", map[string]any{"role": "Editor", "ttl": 3600, "max_ttl": 7200, "service_account_template": tpl}, nil)
 	call(logical.CreateOperation, "roles/viewer", map[string]any{"role": "Viewer", "service_account_template": tpl}, nil)
@@ -120,6 +128,9 @@ func TestFixedAccount(t *testing.T) {
 	if sa["name"] != "agent-"+alice || sa["role"] != "Editor" {
 		t.Fatalf("account = %v %v", sa["name"], sa["role"])
 	}
+	if first.Secret.Renewable {
+		t.Fatal("a fixed account lease is renewable")
+	}
 	t1, t2 := first.Data["token"].(string), second.Data["token"].(string)
 	if !works(t1) || !works(t2) {
 		t.Fatal("a new token does not work")
@@ -132,6 +143,25 @@ func TestFixedAccount(t *testing.T) {
 	}
 	account(saID(first))
 	call(logical.RevokeOperation, "creds/editor", nil, first.Secret) // again: the token is gone already
+
+	// A fixed lease without a valid token ID must fail, not delete the account.
+	broken := *second.Secret
+	broken.InternalData = map[string]any{}
+	for k, v := range second.Secret.InternalData {
+		broken.InternalData[k] = v
+	}
+	broken.InternalData["token_id"] = float64(0)
+	if _, err := b.HandleRequest(ctx, &logical.Request{Operation: logical.RevokeOperation, Path: "creds/editor", Storage: s, Secret: &broken}); err == nil {
+		t.Fatal("a fixed lease without a token ID was revoked")
+	}
+	account(saID(first))
+
+	// Another entity with the same email (for example a reused address) gets nothing.
+	asEntity("entity-new-hire", alice)
+	if _, msg := creds("editor"); !strings.Contains(msg, "another entity") {
+		t.Fatalf("other entity, same email: %q", msg)
+	}
+	as(alice)
 
 	// A second role with the same template cannot take the account.
 	if _, msg := creds("viewer"); !strings.Contains(msg, "belongs to role") {

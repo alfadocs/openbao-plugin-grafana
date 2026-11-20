@@ -25,8 +25,9 @@ const accountsPrefix = "accounts/"
 var accountName = regexp.MustCompile(`^[A-Za-z0-9@._+-]{1,190}$`)
 
 type fixedAccount struct {
-	ID    int64  `json:"id"`
-	Vault string `json:"vault_role"`
+	ID     int64  `json:"id"`
+	Vault  string `json:"vault_role"`
+	Entity string `json:"entity_id"` // the OpenBao entity that owns the account
 }
 
 var accountLock sync.Mutex // ponytail: one lock for all accounts; reads are rare and fast
@@ -51,19 +52,18 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 	accountLock.Lock()
 	defer accountLock.Unlock()
 
-	sa, errResp, err := ensureFixedAccount(ctx, req.Storage, c, name, roleName, role)
-	if errResp != nil || err != nil {
-		return nil, errResp, err
+	// Read the role again under the lock, so a read that waited cannot undo a role change.
+	role, err = b.getRole(ctx, req.Storage, roleName)
+	if err != nil {
+		return nil, nil, err
+	}
+	if role == nil || role.ServiceAccountTemplate == "" {
+		return nil, logical.ErrorResponse("role %q changed during the request; try again", roleName), nil
 	}
 
-	if len(role.RBACRoles) > 0 {
-		roleUIDs, err := customRBACRoleNamesToIDs(c, role.RBACRoles)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error converting role names to IDs: %w", err)
-		}
-		if err := c.SetServiceAccountRoleAssignments(client.ServiceAccountRoleAssignmentsInput{ServiceAccountID: sa.ID, RoleUIDs: roleUIDs}); err != nil {
-			return nil, nil, fmt.Errorf("error setting service account role assignments: %w", err)
-		}
+	sa, errResp, err := ensureFixedAccount(ctx, req.Storage, c, name, roleName, req.EntityID, role)
+	if errResp != nil || err != nil {
+		return nil, errResp, err
 	}
 
 	tokenTTL := role.MaxTTL
@@ -81,13 +81,17 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating service account token: %w", err)
 	}
+	if token.ID <= 0 {
+		// A revoke with no token ID would delete the whole account.
+		return nil, nil, fmt.Errorf("grafana returned token ID %d for service account %d; the token stays until it expires", token.ID, sa.ID)
+	}
 
 	return &grafanaToken{Token: token.Key, ServiceAccountID: sa.ID, TokenID: token.ID}, nil, nil
 }
 
 // ensureFixedAccount returns the account for name. It makes the account when the
 // plugin has no record of it, and sets the basic role of the Vault role each time.
-func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafana, name, roleName string, role *grafanaRoleEntry) (*client.ServiceAccount, *logical.Response, error) {
+func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafana, name, roleName, entityID string, role *grafanaRoleEntry) (*client.ServiceAccount, *logical.Response, error) {
 	want := "None"
 	if role.Role != "" {
 		want = role.Role
@@ -104,6 +108,10 @@ func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafan
 		}
 		if rec.Vault != roleName {
 			return nil, logical.ErrorResponse("service account %q belongs to role %q; give each role its own service_account_template", name, rec.Vault), nil
+		}
+		if rec.Entity != entityID {
+			// For example a reused email: the new person must not get the old person's account.
+			return nil, logical.ErrorResponse("service account %q belongs to another entity; an operator must delete accounts/%s and the account in Grafana", name, name), nil
 		}
 		sa, err := c.GetServiceAccount(rec.ID)
 		switch {
@@ -141,12 +149,14 @@ func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafan
 	if err != nil {
 		return nil, nil, err
 	}
-	stored, err := logical.StorageEntryJSON(accountsPrefix+name, fixedAccount{ID: sa.ID, Vault: roleName})
+	stored, err := logical.StorageEntryJSON(accountsPrefix+name, fixedAccount{ID: sa.ID, Vault: roleName, Entity: entityID})
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := s.Put(ctx, stored); err != nil {
-		_ = c.DeleteServiceAccount(sa.ID) // ponytail: best effort; the next read reports the name clash
+		if delErr := c.DeleteServiceAccount(sa.ID); delErr != nil {
+			return nil, nil, fmt.Errorf("could not record service account %d (%q): %w; deleting it also failed, delete it in Grafana: %v", sa.ID, name, err, delErr)
+		}
 		return nil, nil, err
 	}
 	return &sa, nil, nil

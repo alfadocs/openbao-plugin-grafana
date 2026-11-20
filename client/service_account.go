@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -103,7 +104,8 @@ func (g *Grafana) FindServiceAccount(name string) (*ServiceAccount, error) {
 		return nil, fmt.Errorf("error searching service accounts: %w", err)
 	}
 	for _, sa := range result.ServiceAccounts {
-		if sa.Name == name {
+		// Grafana lowercases the login, so names that differ only in case clash.
+		if strings.EqualFold(sa.Name, name) {
 			return &sa, nil
 		}
 	}

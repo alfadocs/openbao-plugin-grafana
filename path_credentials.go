@@ -87,6 +87,7 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 		"access_policy_id":   token.AccessPolicyID,
 		"service_account_id": token.ServiceAccountID,
 		"token_id":           token.TokenID,
+		"fixed_account":      token.TokenID != 0,
 		"vault_role":         roleName,
 	})
 
@@ -96,6 +97,11 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 
 	if role.MaxTTL > 0 {
 		resp.Secret.MaxTTL = role.MaxTTL
+	}
+
+	if token.TokenID != 0 {
+		// The Grafana token has a fixed lifetime; a renewed lease would outlive it.
+		resp.Secret.Renewable = false
 	}
 
 	return resp, nil

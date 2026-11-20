@@ -88,14 +88,13 @@ func (b *grafanaBackend) tokenRevoke(ctx context.Context, req *logical.Request, 
 		}
 		// A lease of a fixed service account has a token_id: delete only the token,
 		// so that the account and its history stay.
-		if raw, ok := req.Secret.InternalData["token_id"]; ok && raw != nil {
-			tokenID, err := serviceAccountIDFromInternalData(raw)
-			if err != nil {
-				return nil, err
+		if fixed, _ := req.Secret.InternalData["fixed_account"].(bool); fixed {
+			tokenID, err := serviceAccountIDFromInternalData(req.Secret.InternalData["token_id"])
+			if err != nil || tokenID <= 0 {
+				// Never fall through to deleting the shared account.
+				return nil, fmt.Errorf("fixed account lease has no valid token_id (%v): %v", req.Secret.InternalData["token_id"], err)
 			}
-			if tokenID != 0 {
-				return nil, client.DeleteServiceAccountToken(serviceAccountID, tokenID)
-			}
+			return nil, client.DeleteServiceAccountToken(serviceAccountID, tokenID)
 		}
 		err = client.DeleteServiceAccount(serviceAccountID)
 

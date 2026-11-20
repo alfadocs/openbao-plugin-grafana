@@ -289,6 +289,12 @@ func (b *grafanaBackend) pathRolesWrite(ctx context.Context, req *logical.Reques
 		return logical.ErrorResponse("service_account_template needs config type %q", GrafanaType), nil
 	}
 
+	if roleEntry.ServiceAccountTemplate != "" && len(roleEntry.RBACRoles) > 0 {
+		// A fixed account keeps its assignments after a role change, so a removed
+		// grant would stay. Use the basic role only.
+		return logical.ErrorResponse("service_account_template cannot be used with rbac_roles"), nil
+	}
+
 	if err := roleEntry.validate(config.Type); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
