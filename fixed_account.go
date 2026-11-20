@@ -29,6 +29,7 @@ type fixedAccount struct {
 	ID     int64  `json:"id"`
 	Vault  string `json:"vault_role"`
 	Entity string `json:"entity_id"` // the OpenBao entity that owns the account
+	URL    string `json:"grafana_url"`
 }
 
 // accountLock serialises creds reads with role writes and deletes.
@@ -57,7 +58,11 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 		return nil, logical.ErrorResponse("role %q has rbac_roles, which a fixed account cannot use", roleName), nil
 	}
 
-	sa, errResp, err := ensureFixedAccount(ctx, req.Storage, c, name, roleName, req.EntityID, role)
+	config, err := getConfig(ctx, req.Storage)
+	if err != nil || config == nil {
+		return nil, nil, fmt.Errorf("error reading config: %v", err)
+	}
+	sa, errResp, err := ensureFixedAccount(ctx, req.Storage, c, name, roleName, req.EntityID, config.URL, role)
 	if errResp != nil || err != nil {
 		return nil, errResp, err
 	}
@@ -68,6 +73,10 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 	}
 	if tokenTTL == 0 {
 		tokenTTL = 24 * time.Hour
+	}
+	if max := b.System().MaxLeaseTTL(); max > 0 && tokenTTL > max {
+		// OpenBao caps the lease at the mount maximum; the token must not outlive the lease.
+		tokenTTL = max
 	}
 	token, err := c.CreateServiceAccountToken(client.CreateServiceAccountTokenInput{
 		Name:             fmt.Sprintf("vault-%s", uuid.New()),
@@ -87,7 +96,7 @@ func (b *grafanaBackend) createFixedAccountToken(ctx context.Context, req *logic
 
 // ensureFixedAccount returns the account for name. It makes the account when the
 // plugin has no record of it, and sets the basic role of the Vault role each time.
-func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafana, name, roleName, entityID string, role *grafanaRoleEntry) (*client.ServiceAccount, *logical.Response, error) {
+func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafana, name, roleName, entityID, grafanaURL string, role *grafanaRoleEntry) (*client.ServiceAccount, *logical.Response, error) {
 	want := "None"
 	if role.Role != "" {
 		want = role.Role
@@ -104,6 +113,9 @@ func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafan
 		}
 		if rec.Vault != roleName {
 			return nil, logical.ErrorResponse("service account %q belongs to role %q; give each role its own service_account_template", name, rec.Vault), nil
+		}
+		if rec.URL != grafanaURL {
+			return nil, logical.ErrorResponse("service account %q was made on %s, not on the current Grafana; use a new mount for another Grafana", name, rec.URL), nil
 		}
 		if rec.Entity != entityID {
 			// For example a reused email: the new person must not get the old person's account.
@@ -145,7 +157,7 @@ func ensureFixedAccount(ctx context.Context, s logical.Storage, c *client.Grafan
 	if err != nil {
 		return nil, nil, err
 	}
-	stored, err := logical.StorageEntryJSON(accountsPrefix+name, fixedAccount{ID: sa.ID, Vault: roleName, Entity: entityID})
+	stored, err := logical.StorageEntryJSON(accountsPrefix+name, fixedAccount{ID: sa.ID, Vault: roleName, Entity: entityID, URL: grafanaURL})
 	if err != nil {
 		return nil, nil, err
 	}

@@ -182,6 +182,16 @@ func TestFixedAccount(t *testing.T) {
 	}
 	as(alice)
 
+	// After a move to another Grafana, revoke and reuse refuse to act on the new target.
+	call(logical.UpdateOperation, "config", map[string]any{"url": "http://127.0.0.1:1", "token": "other"}, nil)
+	if _, err := b.HandleRequest(ctx, &logical.Request{Operation: logical.RevokeOperation, Path: "creds/editor", Storage: s, Secret: second.Secret}); err == nil {
+		t.Fatal("revoke went to another Grafana")
+	}
+	if _, msg := creds("editor"); !strings.Contains(msg, "not on the current Grafana") {
+		t.Fatalf("account from another Grafana: %q", msg)
+	}
+	call(logical.UpdateOperation, "config", map[string]any{"url": url, "token": adminToken}, nil)
+
 	// Another entity with the same email (for example a reused address) gets nothing.
 	asEntity("entity-new-hire", alice)
 	if _, msg := creds("editor"); !strings.Contains(msg, "another entity") {

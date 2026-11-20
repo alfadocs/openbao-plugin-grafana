@@ -41,6 +41,17 @@ func (b *grafanaBackend) grafanaToken() *framework.Secret {
 }
 
 func (b *grafanaBackend) tokenRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	if leaseURL, _ := req.Secret.InternalData["grafana_url"].(string); leaseURL != "" {
+		config, err := getConfig(ctx, req.Storage)
+		if err != nil {
+			return nil, err
+		}
+		if config == nil || config.URL != leaseURL {
+			// Fail, so that OpenBao keeps the lease, instead of deleting on another Grafana.
+			return nil, fmt.Errorf("lease was issued by %s, but the mount now points elsewhere; restore the config to revoke it", leaseURL)
+		}
+	}
+
 	client, err := b.getClient(ctx, req.Storage)
 	if err != nil {
 		return nil, fmt.Errorf("error getting client: %w", err)

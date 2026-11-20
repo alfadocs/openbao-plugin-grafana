@@ -93,6 +93,7 @@ func (b *grafanaBackend) createUserCreds(ctx context.Context, req *logical.Reque
 		"token_id":           token.TokenID,
 		"fixed_account":      token.TokenID != 0,
 		"vault_role":         roleName,
+		"grafana_url":        config.URL, // revoke refuses another target
 	})
 
 	if role.TTL > 0 {
